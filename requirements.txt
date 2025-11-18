@@ -1,2 +1,11 @@
 streamlit
-openai
+pymupdf
+langchain
+PyMuPDF
+langchain_community
+langchain_experimental
+sentence-transformers
+langchain_huggingface
+langchain-chroma
+langchain-openai
+
