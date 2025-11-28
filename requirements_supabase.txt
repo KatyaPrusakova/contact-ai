@@ -1,0 +1,4 @@
+# Supabase Upload Requirements
+# Using older supabase version to avoid conflicts with google-genai
+supabase==1.0.3
+python-dotenv==1.0.0
