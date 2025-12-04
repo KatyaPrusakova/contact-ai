@@ -4,8 +4,8 @@ from supabase import create_client, Client
 from typing import List, Dict, Any
 
 # Supabase configuration
-SUPABASE_URL = os.getenv("SUPABASE_URL", "")
-SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
+SUPABASE_URL = "https://tlykfbxilbcyiownnyvi.supabase.co"
+SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRseWtmYnhpbGJjeWlvd25ueXZpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjM0ODgyNjIsImV4cCI6MjA3OTA2NDI2Mn0.AWkHw2oZzkRxm6ScuBGYKkiBtYsX8Or3P3GD28OVOUo"
 
 def create_supabase_client() -> Client:
     """Create and return a Supabase client."""
@@ -29,18 +29,36 @@ def load_articles(json_file: str) -> List[Dict[str, Any]]:
 
 def prepare_article_for_upload(article: Dict[str, Any], index: int) -> Dict[str, Any]:
     """Prepare article data for Supabase upload."""
-    # Don't include 'id' - let Supabase auto-generate it
-    prepared = {
-        "title": article.get("Title", ""),
-        "authors": article.get("Authors", []),
-        "abstract": article.get("Abstract", ""),
-        "text": article.get("Text", ""),
-        "tags": article.get("Tags", []),
-        "category": article.get("Category", ""),
-        "volume": article.get("Volume"),
-        "years": article.get("Years", "")
-    }
+    # Get content field (could be "Text" or "Content")
+    content = article.get("Content", article.get("Text", ""))
+    authors = article.get("Authors", [])
+    author_str = ", ".join(authors) if authors else "Unknown"
     
+    # Estimate read time (assuming 200 words per minute)
+    word_count = len(content.split())
+    read_time = max(1, word_count // 200)
+    
+    # Get abstract/excerpt
+    abstract = article.get("Abstract", "")
+    if not abstract and content:
+        # Create excerpt from first 200 characters
+        abstract = content[:200] + "..." if len(content) > 200 else content
+    
+    # Get tags - combine Tags array into tags string if needed
+    tags_list = article.get("Tags", [])
+    tags_str = ", ".join(tags_list) if tags_list else ""
+    
+    prepared = {
+        "title": article.get("Title", "Untitled"),
+        "content": content,
+        "author": author_str,
+        "main_category": article.get("Category", "Art & Performance"),
+        "secondary_tags": tags_list,  # Keep as array for secondary_tags
+        "excerpt": abstract,
+        "read_time": read_time,
+        "years": str(article.get("Years", "")),
+        "upvotes": 0
+    }
     
     return prepared
 
@@ -62,65 +80,13 @@ def upload_articles_batch(supabase: Client, articles: List[Dict[str, Any]], batc
     
     print(f"\n✓ Upload complete!")
 
-def print_sql_schema():
-    """Print the SQL schema for creating the table in Supabase."""
-    schema = """
--- SQL Schema for Supabase
--- Run this in your Supabase SQL Editor before uploading data
-
-CREATE TABLE IF NOT EXISTS articles (
-    id BIGSERIAL PRIMARY KEY,
-    title TEXT NOT NULL,
-    authors TEXT[] DEFAULT '{}',
-    abstract TEXT DEFAULT '',
-    text TEXT NOT NULL,
-    tags TEXT[] DEFAULT '{}',
-    category TEXT DEFAULT '',
-    volume INTEGER,
-    years TEXT DEFAULT '',
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
--- Create indexes for better query performance
-CREATE INDEX IF NOT EXISTS idx_articles_title ON articles USING gin(to_tsvector('english', title));
-CREATE INDEX IF NOT EXISTS idx_articles_text ON articles USING gin(to_tsvector('english', text));
-CREATE INDEX IF NOT EXISTS idx_articles_tags ON articles USING gin(tags);
-CREATE INDEX IF NOT EXISTS idx_articles_category ON articles(category);
-CREATE INDEX IF NOT EXISTS idx_articles_volume ON articles(volume);
-CREATE INDEX IF NOT EXISTS idx_articles_authors ON articles USING gin(authors);
-
--- Enable Row Level Security (RLS)
-ALTER TABLE articles ENABLE ROW LEVEL SECURITY;
-
--- Create policy to allow public read access (adjust as needed)
-CREATE POLICY "Allow public read access" ON articles
-    FOR SELECT TO public
-    USING (true);
-
--- Create policy to allow authenticated users to insert (adjust as needed)
-CREATE POLICY "Allow authenticated insert" ON articles
-    FOR INSERT TO authenticated
-    WITH CHECK (true);
-
--- Create policy to allow authenticated users to update (adjust as needed)
-CREATE POLICY "Allow authenticated update" ON articles
-    FOR UPDATE TO authenticated
-    USING (true);
-"""
-    print(schema)
-    print("\n" + "="*80)
-    print("Copy and run the above SQL in your Supabase SQL Editor")
-    print("="*80 + "\n")
 
 def main():
     print("Contact Improvisation Articles - Supabase Uploader")
     print("=" * 80)
     
-    # Print SQL schema
-    print_sql_schema()
-    
-    input("Press Enter after you've created the table in Supabase...")
+    # Use source18_enriched.json
+    json_file = "source18_enriched.json"
     
     try:
         # Create Supabase client
@@ -128,16 +94,35 @@ def main():
         print("✓ Connected to Supabase")
         
         # Load articles
-        articles = load_articles("matched_articles_normalized.json")
+        articles = load_articles(json_file)
         
         # Prepare articles for upload
+        print("\nPreparing articles for upload...")
         prepared_articles = [
             prepare_article_for_upload(article, i) 
             for i, article in enumerate(articles)
         ]
+        print(f"✓ Prepared {len(prepared_articles)} articles")
+        
+        # Show sample
+        if prepared_articles:
+            print("\nSample article data:")
+            sample = prepared_articles[0]
+            print(f"  Title: {sample['title']}")
+            print(f"  Author: {sample['author']}")
+            print(f"  Category: {sample['main_category']}")
+            print(f"  Tags: {sample['secondary_tags']}")
+            print(f"  Read time: {sample['read_time']} min")
+            print(f"  Excerpt: {sample['excerpt'][:100]}...")
+        
+        # Confirm before upload
+        confirm = input("\nProceed with upload? (yes/no): ")
+        if confirm.lower() != 'yes':
+            print("Upload cancelled.")
+            return
         
         # Upload articles
-        upload_articles_batch(supabase, prepared_articles)
+        upload_articles_batch(supabase, prepared_articles, batch_size=10)
         
         # Verify upload
         print("\nVerifying upload...")

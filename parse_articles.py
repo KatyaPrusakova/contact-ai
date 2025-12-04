@@ -2,93 +2,76 @@ import json
 import re
 import time
 import random
-from pathlib import Path
 from google import genai
 from google.genai import types, errors
 
 # Configuration
-INPUT_FILE = "source.txt"
-OUTPUT_FILE = "parsed_articles_new.json"
+INPUT_FILE = "source19.json"
+OUTPUT_FILE = "source19_enriched.json"
 MODEL_NAME = "gemini-2.0-flash-exp"
-CHUNK_SIZE = 25000  # Reduced to ensure output fits within token limits
-OVERLAP = 1000      # Overlap to catch articles split across chunks
 
-MAX_RETRIES = 8
-BASE_DELAY = 3
+MAX_RETRIES = 5
+BASE_DELAY = 2
 
 # Initialize Gemini client
 client = genai.Client(api_key="AIzaSyAV5hOBpd4xnkE3kvy14r8OwIt1pjsufeQ")
 
-GEMINI_PROMPT = """
-You are an expert archival-article parser. Extract ALL complete articles from the following dance journal text.
+CATEGORY_KEYWORDS = {
+    "Art & Performance": ["improvisation", "jam", "festival", "stage", "choreography", "creative", "artistic", "poem", "performance", "dance", "music"],
+    "Somatics & Body Awareness": ["somatic", "body", "awareness", "movement", "sensation", "perception", "physical", "embodiment", "kinesthetic"],
+    "Psychology": ["emotion", "trauma", "healing", "consciousness", "psychology", "integration", "mental", "mind"],
+    "Pedagogy & Facilitation": ["lesson", "teaching", "facilitation", "pedagogy", "group", "instructor", "student", "practice", "workshop", "class"],
+    "Culture & Community": ["community", "culture", "diversity", "global", "local", "inclusion", "society", "social"],
+    "Science & Research": ["research", "anatomy", "analysis", "biomechanics", "data", "study", "academic", "scientific", "theory"]
+}
 
-### OUTPUT FORMAT (strict JSON)
-Return ONLY a JSON array. Each article must follow this exact structure:
+ENRICHMENT_PROMPT = """
+Analyze this dance/movement article and provide:
 
+1. **Category**: Choose ONE most relevant category from this list:
+   - Psychology (healing, emotion, trauma)
+   - Community (society , social, culture)
+   - Somatics & Body Awareness (sensation, perception, embodiment)
+   - Research (study scientific, theory)
+   - Pedagogy & Facilitation (teaching, workshop, class, practice)
+   - Art (creative, artistic, poem, performance)
+
+2. **Abstract**: Write a clear 2-4 sentence summary of the main content and themes.
+
+3. **Tags**: List maximum 5 popular topics that people would easily understand and search for. 
+   - Use Title Case (Capitalize Each Word)
+   - Choose well-known, general topics (e.g., "Pedagogy", "Workshop Structure", "Therapy", "Movement Technique")
+   - DO NOT use "Contact Improvisation" as all articles are already about this topic
+   - Make them intuitive and searchable
+
+Article Title: {title}
+Authors: {authors}
+
+Article Content:
+{content}
+
+Return ONLY valid JSON in this exact format:
 {{
-  "Title": "TITLE IN FULL CAPS OR ORIGINAL FORM",
-  "Authors": ["Author One", "Author Two"],
-  "Abstract": "1–3 sentence abstract summarizing the article.",
-  "Text": "The full article text exactly as it appears, preserving line breaks."
+  "Category": "chosen category name",
+  "Abstract": "your 2-4 sentence summary",
+  "Tags": ["Tag One", "Tag Two", "Tag Three", "Tag Four", "Tag Five"]
 }}
-
-### EXTRACTION RULES
-
-1. **Title**
-   - Usually appears in uppercase, title-case, or as a distinctive heading
-   - May be followed by page numbers (ignore page numbers)
-   - Preserve the title as written
-
-2. **Authors**
-   - Usually appear right after the title
-   - May be prefixed with "by", "interview with", etc.
-   - Split multiple authors into a list
-   - Remove editorial notes like "interviews", "with hieroglyphs by…", etc.
-
-3. **Abstract**
-   - Create a concise 1–3 sentence summary of what the article is about
-   - If the article is very short or unclear, provide best effort summary
-
-4. **Text**
-   - Include the FULL article body from start to finish
-   - Preserve all punctuation and line breaks exactly as they appear
-   - Stop at the next article title or volume marker
-   - Do NOT invent or modify the text
-
-5. **Ignore these items** (they are NOT articles):
-   - Table of contents listings
-   - Page numbers, volume numbers, issue numbers
-   - Publication metadata, copyright notices, ISBN
-   - Editorial credits, masthead information
-   - Section dividers, headers, footers
-   - Advertisements, URLs, repeated running headers
-
-6. **Important**: Extract EVERY complete article you find. Do not skip articles.
-
-### IMPORTANT
-- Return VALID JSON ONLY
-- Do NOT include explanations, comments, or markdown wrappers
-- Do NOT hallucinate missing text
-- If no complete articles found, return empty array: []
-
-### INPUT TEXT:
-{text}
 """
 
-def chunk_text(text, size=CHUNK_SIZE, overlap=OVERLAP):
-    """Split text into overlapping chunks."""
-    chunks = []
-    start = 0
-    while start < len(text):
-        end = min(start + size, len(text))
-        chunk = text[start:end]
-        chunks.append(chunk)
-        start += size - overlap
-    return chunks
-
-def call_gemini(chunk: str, chunk_num: int, total: int) -> list:
-    """Call Gemini to extract articles from a chunk."""
-    prompt_text = GEMINI_PROMPT.format(text=chunk)
+def call_gemini_for_enrichment(article):
+    """Call Gemini to generate Category, Abstract, and Tags for an article."""
+    title = article.get('Title', 'Untitled')
+    authors = ', '.join(article.get('Authors', [])) if article.get('Authors') else 'Unknown'
+    content = article.get('Content', '')
+    
+    # Limit content length for API
+    content_preview = content[:4000] if len(content) > 4000 else content
+    
+    prompt_text = ENRICHMENT_PROMPT.format(
+        title=title,
+        authors=authors,
+        content=content_preview
+    )
     
     for attempt in range(1, MAX_RETRIES + 1):
         try:
@@ -101,155 +84,167 @@ def call_gemini(chunk: str, chunk_num: int, total: int) -> list:
                     )
                 ],
                 config=types.GenerateContentConfig(
-                    max_output_tokens=32000,
-                    temperature=0.0
+                    max_output_tokens=1000,
+                    temperature=0.3
                 )
             )
             
-            # Check if response has valid content
             if not response or not hasattr(response, 'text') or not response.text:
-                print(f"  [Attempt {attempt}] Invalid response from API")
-                wait_time = BASE_DELAY * (2 ** (attempt - 1)) + random.uniform(0, 1.5)
-                time.sleep(wait_time)
+                time.sleep(BASE_DELAY)
                 continue
             
-            # Save raw response to file
-            response_file = f"response_chunk_{chunk_num:03d}.txt"
-            with open(response_file, 'w', encoding='utf-8') as f:
-                f.write(response.text)
-            print(f"  💾 Saved raw response to {response_file}")
+            # Parse response
+            text_response = response.text.strip()
             
-            # Parse JSON response (remove markdown wrappers if present)
-            text = response.text.strip()
+            # Remove markdown wrappers
+            if text_response.startswith('```json'):
+                text_response = text_response[7:]
+            elif text_response.startswith('```'):
+                text_response = text_response[3:]
+            if text_response.endswith('```'):
+                text_response = text_response[:-3]
             
-            # Remove markdown code blocks
-            if text.startswith('```json'):
-                text = text[7:]  # Remove ```json
-            elif text.startswith('```'):
-                text = text[3:]   # Remove ```
+            text_response = text_response.strip()
             
-            if text.endswith('```'):
-                text = text[:-3]  # Remove trailing ```
+            result = json.loads(text_response)
             
-            text = text.strip()
+            category = result.get('Category', '')
+            abstract = result.get('Abstract', '')
+            tags = result.get('Tags', [])
             
-            parsed = json.loads(text)
-            
-            # Validate it's a list
-            if isinstance(parsed, list):
-                print(f"  ✓ Chunk {chunk_num}/{total}: Found {len(parsed)} article(s)")
-                return parsed
-            else:
-                print(f"  ⚠️  Chunk {chunk_num}/{total}: Unexpected response format")
-                return []
+            return category, abstract, tags, None
         
-        except errors.ServerError as e:
-            wait_time = BASE_DELAY * (2 ** (attempt - 1)) + random.uniform(0, 1.5)
-            print(f"  [Attempt {attempt}] API busy, retrying in {wait_time:.1f}s...")
-            time.sleep(wait_time)
-        except json.JSONDecodeError as e:
-            print(f"  [Attempt {attempt}] JSON decode error: {e}")
-            print(f"  Response length: {len(response.text)} chars")
-            print(f"  Response preview: {response.text[:200]}...")
-            print(f"  Response end: ...{response.text[-200:]}")
-            # Retry with smaller chunk or different approach
-            if attempt < MAX_RETRIES:
-                wait_time = BASE_DELAY
-                time.sleep(wait_time)
-                continue
-            return []
         except Exception as e:
-            print(f"  [Attempt {attempt}] Error: {e}")
-            time.sleep(BASE_DELAY)
+            error_str = str(e)
+            # Check for quota exhaustion
+            if '429' in error_str or 'RESOURCE_EXHAUSTED' in error_str or 'quota' in error_str.lower():
+                print(f"      ⚠ QUOTA EXHAUSTED: {error_str[:100]}")
+                return None, None, None, "QUOTA_EXHAUSTED"
+            elif 'ServerError' in str(type(e).__name__):
+                wait_time = BASE_DELAY * (2 ** (attempt - 1)) + random.uniform(0, 1)
+                print(f"      Server error, retrying in {wait_time:.1f}s...")
+                time.sleep(wait_time)
+            else:
+                print(f"      [Attempt {attempt}] Error: {e}")
+                if attempt < MAX_RETRIES:
+                    time.sleep(BASE_DELAY)
+                    continue
     
-    print(f"  ✗ Max retries reached for chunk {chunk_num}")
-    return []
+    # Fallback
+    return "Art & Performance", "", [], None
 
-def deduplicate_articles(articles):
-    """Remove duplicate articles based on title similarity."""
-    unique_articles = []
-    seen_titles = set()
+def save_progress(enriched_articles, remaining_articles, filename="source_partial.json"):
+    """Save current progress to a file."""
+    print(f"\n{'='*70}")
+    print(f"💾 SAVING PROGRESS...")
+    print(f"{'='*70}")
     
-    for article in articles:
-        title_key = article['Title'].lower().strip()
-        if title_key not in seen_titles:
-            seen_titles.add(title_key)
-            unique_articles.append(article)
+    with open(filename, 'w', encoding='utf-8') as f:
+        json.dump(enriched_articles, f, ensure_ascii=False, indent=2)
     
-    return unique_articles
+    print(f"✓ Saved {len(enriched_articles)} enriched articles to {filename}")
+    print(f"⏸ Remaining articles: {len(remaining_articles)}")
 
-def extract_articles(text):
-    """Extract articles from the source text using LLM."""
-    print(f"Splitting text into chunks...")
-    chunks = chunk_text(text)
-    print(f"Total chunks: {len(chunks)}\n")
-    
-    all_articles = []
-    
-    for idx, chunk in enumerate(chunks, 1):
-        print(f"Processing chunk {idx}/{len(chunks)}...")
-        articles = call_gemini(chunk, idx, len(chunks))
-        
-        if articles:
-            all_articles.extend(articles)
-        
-        # Pause between requests
-        time.sleep(1.5 + random.uniform(0, 2.0))
-    
-    print(f"\nTotal articles extracted: {len(all_articles)}")
-    
-    # Deduplicate
-    unique_articles = deduplicate_articles(all_articles)
-    print(f"After deduplication: {len(unique_articles)} unique articles")
-    
-    return unique_articles
-
-
-
-def main():
+def enrich_articles():
+    """Load source18.json, enrich each article with Gemini, and save."""
     print("="*70)
-    print("Article Parser - Using Gemini LLM")
+    print("Enriching source18.json with Category, Abstract, and Tags")
     print("="*70)
-    print(f"\nReading {INPUT_FILE}...")
     
-    if not Path(INPUT_FILE).exists():
-        print(f"Error: {INPUT_FILE} not found!")
-        return
+    # Load articles
+    print(f"\nLoading {INPUT_FILE}...")
+    with open(INPUT_FILE, 'r', encoding='utf-8') as f:
+        articles = json.load(f)
     
-    text = Path(INPUT_FILE).read_text(encoding="utf-8")
-    print(f"File size: {len(text):,} characters\n")
+    print(f"Found {len(articles)} articles\n")
     
-    print("Extracting articles using LLM...\n")
-    articles = extract_articles(text)
+    enriched_articles = []
+    quota_exhausted = False
     
-    if not articles:
-        print("\n⚠️  No articles extracted!")
-        return
+    for idx, article in enumerate(articles, 1):
+        title = article.get('Title', 'Untitled')
+        print(f"[{idx}/{len(articles)}] Processing: {title[:60]}...")
+        
+        # Call Gemini for enrichment
+        category, abstract, tags, error = call_gemini_for_enrichment(article)
+        
+        # Check for quota exhaustion
+        if error == "QUOTA_EXHAUSTED":
+            print(f"\n{'='*70}")
+            print("⚠ QUOTA EXHAUSTED - Saving progress and pausing...")
+            print(f"{'='*70}")
+            
+            # Save current progress
+            remaining = articles[idx-1:]  # Include current article in remaining
+            save_progress(enriched_articles, remaining, "source_partial.json")
+            
+            print(f"\n💤 Sleeping for 60 seconds before resuming...")
+            print(f"   You can also stop the script and resume later.")
+            print(f"   Processed: {len(enriched_articles)}/{len(articles)} articles")
+            
+            quota_exhausted = True
+            time.sleep(60)  # Sleep for 1 minute
+            
+            # Retry current article
+            print(f"\n🔄 Resuming from article {idx}...")
+            category, abstract, tags, error = call_gemini_for_enrichment(article)
+            
+            if error == "QUOTA_EXHAUSTED":
+                print("❌ Still quota exhausted. Stopping script.")
+                print(f"   Resume by processing remaining {len(remaining)} articles.")
+                return enriched_articles, remaining
+        
+        # Update article
+        enriched_article = {
+            "Title": article.get('Title'),
+            "Authors": article.get('Authors', []),
+            "Abstract": abstract,
+            "Content": article.get('Content'),
+            "Tags": tags,
+            "Category": category,
+            "Volume": article.get('Volume'),
+            "Years": article.get('Years')
+        }
+        
+        enriched_articles.append(enriched_article)
+        
+        print(f"  ✓ Category: {category}")
+        print(f"  ✓ Tags: {len(tags)} tags")
+        
+        # Save progress periodically (every 5 articles)
+        if idx % 5 == 0:
+            save_progress(enriched_articles, articles[idx:], "source_partial.json")
+        
+        # Rate limiting
+        time.sleep(1.5 + random.uniform(0, 0.5))
     
-    # Save to JSON
-    print(f"\nSaving {len(articles)} articles to {OUTPUT_FILE}...")
+    # Save final results
+    print(f"\n{'='*70}")
+    print(f"Saving {len(enriched_articles)} enriched articles to {OUTPUT_FILE}...")
     with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
-        json.dump(articles, f, ensure_ascii=False, indent=2)
+        json.dump(enriched_articles, f, ensure_ascii=False, indent=2)
     
     print(f"✓ Successfully saved to {OUTPUT_FILE}")
     
-    # Print statistics
-    print("\n" + "="*70)
-    print("EXTRACTION SUMMARY")
-    print("="*70)
-    print(f"Total articles: {len(articles)}")
+    # Summary
+    print(f"\n{'='*70}")
+    print("SUMMARY")
+    print(f"{'='*70}")
+    print(f"Total articles enriched: {len(enriched_articles)}")
     
-    # Count articles with authors
-    with_authors = sum(1 for a in articles if a.get('Authors'))
-    print(f"Articles with authors: {with_authors}")
+    # Show sample
+    if enriched_articles:
+        print(f"\nSample enriched article:")
+        sample = enriched_articles[0]
+        print(f"Title: {sample['Title']}")
+        print(f"Category: {sample['Category']}")
+        print(f"Abstract: {sample['Abstract'][:150]}...")
+        print(f"Tags: {', '.join(sample['Tags'][:5])}...")
     
-    # Show first few articles
-    print("\nFirst 3 articles:")
-    for i, article in enumerate(articles[:3], 1):
-        print(f"\n{i}. {article['Title']}")
-        if article['Authors']:
-            print(f"   By: {', '.join(article['Authors'])}")
-        print(f"   Abstract: {article['Abstract'][:100]}...")
+    return enriched_articles, []
+
+def main():
+    enrich_articles()
 
 if __name__ == "__main__":
     main()
