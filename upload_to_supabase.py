@@ -86,7 +86,7 @@ def main():
     print("=" * 80)
     
     # Use source18_enriched.json
-    json_file = "source18_enriched.json"
+    json_file = "source20_enriched.json"
     
     try:
         # Create Supabase client

@@ -6,8 +6,8 @@ from google import genai
 from google.genai import types, errors
 
 # Configuration
-INPUT_FILE = "source19.json"
-OUTPUT_FILE = "source19_enriched.json"
+INPUT_FILE = "source20.json"
+OUTPUT_FILE = "source20_enriched.json"
 MODEL_NAME = "gemini-2.0-flash-exp"
 
 MAX_RETRIES = 5

@@ -2,26 +2,37 @@ import re
 import json
 
 def extract_author(text):
-    """Extract author name from 'by Author Name' pattern."""
+    """Extract author name(s) from 'by Author Name' pattern."""
     # Look for "by Author Name" pattern - must have "by " before the name
     # Pattern looks for "by " followed by name(s) until end of line
-    # Matches names with capitals, spaces, periods, hyphens
-    pattern = r'(?:^|\n)\s*[Bb]y\s+([A-Z][a-zA-Z\s\.\-]+?)(?:\s*\n|$)'
+    # Matches names with capitals, spaces, periods, hyphens, commas
+    pattern = r'(?:^|\n)\s*[Bb]y\s+([A-Z][a-zA-Z\s\.\-,]+?)(?:\s*\n|$)'
     
     match = re.search(pattern, text, re.MULTILINE)
     if match:
-        author = match.group(1).strip()
+        author_string = match.group(1).strip()
         # Clean up extra whitespace
-        author = re.sub(r'\s+', ' ', author)
-        return author
+        author_string = re.sub(r'\s+', ' ', author_string)
+        
+        # Split by comma if multiple authors
+        if ',' in author_string:
+            # Split and clean each author name
+            authors = [name.strip() for name in author_string.split(',')]
+            # Filter out empty strings and "and" connectors
+            authors = [a for a in authors if a and a.lower() != 'and']
+            return authors
+        else:
+            return [author_string]
     
-    return None
+    return []
 
-def clean_author_from_text(text, author):
+def clean_author_from_text(text, authors):
     """Remove author line from text."""
-    if author:
-        # Remove "by Author Name" line
-        text = re.sub(rf'\s*[Bb]y\s+{re.escape(author)}\s*', '', text)
+    if authors:
+        # Join authors back to match the original format
+        author_string = ', '.join(authors)
+        # Remove "by Author Name(s)" line
+        text = re.sub(rf'\s*[Bb]y\s+{re.escape(author_string)}\s*', '', text)
     return text.strip()
 
 def extract_abstract(text):
@@ -92,17 +103,19 @@ def parse_source18(file_path):
         # Create article entry
         article_entry = {
             "Title": title,
-            "Authors": [author] if author else [],
+            "Authors": author if author else [],  # author is now a list
             "Abstract": abstract,
             "Content": article_text,
             "Tags": [],
-            "Volume": 19,
-            "Years": 1994
+            "Volume": 20,
+            "Years": 1995
         }
         
         articles.append(article_entry)
         
-        print(f"[{len(articles)}] {title[:50]}... | Author: {author if author else 'Not found'}")
+        # Format author display
+        author_display = ', '.join(author) if author else 'Not found'
+        print(f"[{len(articles)}] {title[:50]}... | Author: {author_display}")
     
     return articles
 
@@ -111,8 +124,8 @@ def main():
     print("Parsing source18.txt")
     print("="*70)
     
-    input_file = "source19.txt"
-    output_file = "source19.json"
+    input_file = "source20.txt"
+    output_file = "source20.json"
     
     print(f"\nReading {input_file}...")
     articles = parse_source18(input_file)
